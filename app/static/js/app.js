@@ -1,4 +1,5 @@
 import { api, el, setCsrf, setUnauthorizedHandler, showStatus } from "./api.js";
+import { mountStarfield } from "./particles.js";
 
 /* ---------- theme (localStorage holds ONLY visual preference) ---------- */
 const THEME_KEY = "dts-theme";
@@ -327,6 +328,7 @@ async function screenLogin() {
   const decor = el("div", null, { class: "login-decor", "aria-hidden": "true" });
   for (const cls of ["login-grid", "orb-a", "orb-b", "orb-c", "cube-a", "cube-b"]) decor.appendChild(el("span", null, { class: cls }));
   side.appendChild(decor);
+  mountStarfield(side, { color: "255,255,255", baseAlpha: 0.4, count: 55, maxSize: 2 });
   const sBrand = el("div", null, { class: "login-brand" });
   const mark = el("span", "◉", { class: "brand-mark" });
   mark.setAttribute("aria-hidden", "true");
@@ -346,6 +348,7 @@ async function screenLogin() {
   }
   side.appendChild(pts);
   const main = el("div", null, { class: "login-main" });
+  mountStarfield(main, { color: "99,102,241", baseAlpha: 0.5, count: 45, maxSize: 2.2 });
   const card = el("div", null, { class: "card login-card" });
   const brand = el("div", null, { class: "login-brand" });
   const mb = el("div", null);
