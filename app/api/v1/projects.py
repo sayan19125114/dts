@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.v1.deps import AuthContext, get_auth_context, get_project_role, require_project_access
+from app.api.v1.deps import AuthContext, get_auth_context, get_project_role, require_admin, require_project_access
+from app.core.config import get_settings
 from app.core.permissions import can_manage_members, can_manage_project, can_read_project
-from app.db.models import BugHistory, Organization, Project, ProjectMember, User
+from app.db.models import Attachment, Bug, BugHistory, Organization, Project, ProjectMember, User
 from app.db.session import get_db
 from app.services.audit import log_audit
 from app.schemas.schemas import (
@@ -175,6 +177,42 @@ def restore_project(project_id: int, ctx: AuthContext = Depends(get_auth_context
     project.updated_at = _now()
     log_audit(db, actor_id=ctx.user.id, entity_type="project", entity_id=project.id, action="restored", project_id=project.id)
     db.commit()
+    return {"ok": True}
+
+
+@router.delete("/{project_id}")
+def delete_project(project_id: int, ctx: AuthContext = Depends(require_admin), db: Session = Depends(get_db)):
+    """Permanently delete a project and all of its data. Admin-only, irreversible."""
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    # collect attachment files to unlink after the DB transaction commits
+    storage_keys = db.execute(
+        select(Attachment.storage_key).join(Bug, Bug.id == Attachment.bug_id).where(Bug.project_id == project_id)
+    ).scalars().all()
+    log_audit(
+        db,
+        actor_id=ctx.user.id,
+        entity_type="project",
+        entity_id=project.id,
+        action="deleted",
+        project_id=project.id,
+        changes={"project_key": project.project_key, "name": project.name},
+    )
+    # bugs block project deletion (FK RESTRICT); deleting them cascades comments,
+    # history, attachments, custom values, links and watchers at the DB level.
+    db.execute(delete(Bug).where(Bug.project_id == project_id), execution_options={"synchronize_session": False})
+    db.delete(project)
+    db.commit()
+    base = Path(get_settings().upload_dir)
+    for key in storage_keys:
+        try:
+            p = base / key
+            if p.exists():
+                p.unlink()
+        except Exception:
+            log.exception("failed to remove attachment file for deleted project")
+    log.info("project %s permanently deleted by %s", project_id, ctx.user.id)
     return {"ok": True}
 
 

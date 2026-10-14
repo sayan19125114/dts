@@ -321,6 +321,12 @@ async function screenLogin() {
   if (nav) nav.hidden = true;
   closeMobileNav();
   clearApp();
+  const bg = el("div", null, { class: "login-bg", "aria-hidden": "true" });
+  app.appendChild(bg);
+  mountStarfield(bg, {
+    color: () => (document.documentElement.dataset.theme === "dark" ? "148,163,184" : "99,102,241"),
+    baseAlpha: 0.42, count: 90, maxSize: 2.4, speed: 0.00045,
+  });
   const wrap = el("div", null, { class: "login-wrap" });
   const split = el("div", null, { class: "login-split" });
   const side = el("aside", null, { class: "login-side" });
@@ -645,6 +651,16 @@ async function screenProjectDetail(id) {
       const arc = btn(p.status === "archived" ? "Restore project" : "Archive project", "secondary"); arc.type = "button";
       const e = el("p", "", { class: "field-err", role: "alert" });
       row.append(b, arc);
+      if (me.global_role === "admin") {
+        const del = btn("Delete project", "danger");
+        del.addEventListener("click", async () => {
+          if (!(await confirmDialog(`Permanently delete ${p.project_key} — ${p.name}? This erases all its defects, comments, attachments and history. This cannot be undone.`, "Delete forever"))) return;
+          del.disabled = true;
+          try { await api(`/api/v1/projects/${id}`, { method: "DELETE" }); toast("Project deleted", "ok"); location.hash = "#/projects"; }
+          catch (ex) { toast(ex.message, "err"); del.disabled = false; }
+        });
+        row.append(del);
+      }
       f.append(ln, n, ld, d, row, e);
       f.addEventListener("submit", async (ev) => {
         ev.preventDefault(); b.disabled = true; e.textContent = "";

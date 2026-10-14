@@ -11,7 +11,7 @@ Generated from real codebase in `/home/sayan/Downloads/test`. No workflow change
 ## Backend routers (`app/main.py` mounts)
 - `GET /api/health`, `GET /api/v1/health`
 - `app/api/v1/auth.py` prefix `/api/v1/auth`: `POST /login`, `POST /logout`, `GET /me`, `GET /csrf`, `POST /change-password`, `POST /reset-password`
-- `app/api/v1/projects.py` prefix `/api/v1/projects`: `GET ""`, `POST ""`, `GET /{id}`, `PATCH /{id}`, `POST /{id}/archive`, `POST /{id}/restore`, `GET /{id}/members`, `POST /{id}/members`, `PATCH /{id}/members/{uid}`, `DELETE /{id}/members/{uid}`
+- `app/api/v1/projects.py` prefix `/api/v1/projects`: `GET ""`, `POST ""`, `GET /{id}`, `PATCH /{id}`, `DELETE /{id}` (admin-only hard delete), `POST /{id}/archive`, `POST /{id}/restore`, `GET /{id}/members`, `POST /{id}/members`, `PATCH /{id}/members/{uid}`, `DELETE /{id}/members/{uid}`
 - `app/api/v1/bugs.py` prefix `/api/v1`: `GET /projects/{pid}/bugs`, `POST /projects/{pid}/bugs`, `GET /bugs/{id}`, `PATCH /bugs/{id}`, `POST /bugs/{id}/transition`, `POST /bugs/{id}/assign`, `POST /bugs/{id}/archive`, `POST /bugs/{id}/restore`, `GET /bugs/{id}/history`
 - `app/api/v1/comments.py` prefix `/api/v1`: `GET /bugs/{id}/comments`, `POST /bugs/{id}/comments`, `PATCH /comments/{cid}`, `DELETE /comments/{cid}`
 - `app/api/v1/attachments.py` prefix `/api/v1`: `POST /bugs/{id}/attachments`, `GET /attachments/{aid}/download`, `DELETE /attachments/{aid}`, `GET /bugs/{id}/attachments`

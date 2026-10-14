@@ -17,7 +17,7 @@ pip install -r requirements.txt
 cp .env.example .env   # edit SECRET_KEY, COOKIE_SECURE=True behind HTTPS
 alembic upgrade head
 python scripts/create_admin.py --username admin --email admin@example.com --display-name Admin
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload  # --reload auto-restarts on code changes (dev only; drop it in production)
 # open http://127.0.0.1:8000/
 ```
 password - Admin@12456789

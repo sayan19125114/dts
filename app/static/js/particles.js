@@ -15,7 +15,8 @@ export function mountStarfield(container, opts = {}) {
   if (!ctx) return () => {};
 
   const count = opts.count ?? 60;
-  const color = opts.color ?? "99,102,241";
+  const colorOpt = opts.color ?? "99,102,241";
+  const resolveColor = () => (typeof colorOpt === "function" ? colorOpt() : colorOpt);
   const baseAlpha = opts.baseAlpha ?? 0.5;
   const maxSize = opts.maxSize ?? 2.2;
   const speed = opts.speed ?? 0.0009;
@@ -38,6 +39,7 @@ export function mountStarfield(container, opts = {}) {
 
   function draw() {
     ctx.clearRect(0, 0, w, h);
+    const col = resolveColor();
     const cx = w / 2, cy = h / 2, k = Math.min(w, h) * 0.4;
     for (const p of parts) {
       const sx = cx + (p.x / p.z) * k;
@@ -47,7 +49,7 @@ export function mountStarfield(container, opts = {}) {
       const alpha = baseAlpha * (1 - p.z) + 0.08;
       ctx.beginPath();
       ctx.arc(sx, sy, radius, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${color},${alpha.toFixed(3)})`;
+      ctx.fillStyle = `rgba(${col},${alpha.toFixed(3)})`;
       ctx.fill();
     }
   }
