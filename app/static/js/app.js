@@ -324,6 +324,9 @@ async function screenLogin() {
   const split = el("div", null, { class: "login-split" });
   const side = el("aside", null, { class: "login-side" });
   side.setAttribute("aria-hidden", "false");
+  const decor = el("div", null, { class: "login-decor", "aria-hidden": "true" });
+  for (const cls of ["login-grid", "orb-a", "orb-b", "orb-c", "cube-a", "cube-b"]) decor.appendChild(el("span", null, { class: cls }));
+  side.appendChild(decor);
   const sBrand = el("div", null, { class: "login-brand" });
   const mark = el("span", "◉", { class: "brand-mark" });
   mark.setAttribute("aria-hidden", "true");
