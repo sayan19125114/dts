@@ -1,0 +1,37 @@
+# Python / venv (this dir currently hosts a venv in bin/, lib/, include/)
+bin/
+lib/
+include/
+pyvenv.cfg
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Env / secrets
+.env
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Uploads / runtime data
+storage/uploads/*
+!storage/uploads/.gitkeep
+defect_tracker.db*
+
+# Test / caches
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# plan 
+features.md
+plan.md 
