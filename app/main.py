@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -10,7 +11,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.v1 import admin, attachments, audit, auth, bugs, collab, comments, dashboard, extended, orgs, projects, reports
+from app.api.v1 import admin, analytics, attachments, audit, auth, bugs, collab, comments, dashboard, extended, orgs, projects, releases, reports, sla
 from app.api.v1.deps import get_auth_context  # noqa
 from app.core.config import get_settings
 from app.core.logging_config import configure_logging, request_id_var
@@ -23,8 +24,19 @@ configure_logging(settings.debug)
 log = logging.getLogger(__name__)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.services.scheduler import start_scheduler, stop_scheduler
+
+    start_scheduler()
+    try:
+        yield
+    finally:
+        stop_scheduler()
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title=settings.app_name, debug=settings.debug, docs_url="/api/docs", redoc_url=None)
+    app = FastAPI(title=settings.app_name, debug=settings.debug, docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
 
     # Trusted hosts
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
@@ -96,6 +108,9 @@ def create_app() -> FastAPI:
     app.include_router(attachments.router, prefix="/api/v1", tags=["attachments"])
     app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["dashboard"])
     app.include_router(reports.router, prefix="/api/v1/reports", tags=["reports"])
+    app.include_router(sla.router, prefix="/api/v1", tags=["sla"])
+    app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
+    app.include_router(releases.router, prefix="/api/v1", tags=["releases"])
     app.include_router(admin.router, prefix="/api/v1/admin", tags=["admin"])
     app.include_router(audit.router, prefix="/api/v1/admin/audit", tags=["audit"])
     app.include_router(orgs.router, prefix="/api/v1/orgs", tags=["orgs"])

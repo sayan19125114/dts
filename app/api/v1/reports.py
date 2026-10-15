@@ -4,15 +4,18 @@ from __future__ import annotations
 import csv
 import io
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import AuthContext, get_auth_context
-from app.db.models import Bug
+from app.core.config import get_settings
+from app.core.security import hash_token
+from app.db.models import Bug, ExportJob
 from app.db.session import get_db
 from app.db.models import ProjectMember
+from app.schemas.schemas import ExportJobCreatedOut, ExportJobOut, ExportRequestIn
 
 router = APIRouter()
 
@@ -48,10 +51,7 @@ def export_csv(
             return PlainTextResponse(out.getvalue(), media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="bugs.csv"', "X-Content-Type-Options": "nosniff"})
     stmt = select(Bug).where(Bug.is_archived == False)  # noqa
     if project_id is not None:
-        # auth check: must have access
         if visible is not None and project_id not in visible:
-            from fastapi import HTTPException
-
             raise HTTPException(status_code=404, detail="Project not found")
         stmt = stmt.where(Bug.project_id == project_id)
     else:
@@ -84,3 +84,67 @@ def export_csv(
             ]
         )
     return PlainTextResponse(out.getvalue(), media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="bugs.csv"', "X-Content-Type-Options": "nosniff"})
+
+
+# ---- Phase 4: queued/async exports ----
+
+@router.post("/exports", response_model=ExportJobCreatedOut, status_code=201)
+def create_export(payload: ExportRequestIn, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    settings = get_settings()
+    if not settings.feature_async_exports:
+        raise HTTPException(status_code=404, detail="Not found")
+    from app.services import exports as exports_service
+
+    job, token = exports_service.create_job(db, ctx.user, payload.kind, payload.params)
+    if settings.export_inline:
+        exports_service.process_job(db, job)
+    url = f"/api/v1/reports/exports/{job.id}/download?token={token}"
+    return ExportJobCreatedOut(job=ExportJobOut.model_validate(job), download_url=url, token=token)
+
+
+@router.get("/exports", response_model=list[ExportJobOut])
+def list_exports(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    if not get_settings().feature_async_exports:
+        raise HTTPException(status_code=404, detail="Not found")
+    stmt = select(ExportJob)
+    if ctx.user.global_role != "admin":
+        stmt = stmt.where(ExportJob.created_by == ctx.user.id)
+    rows = db.execute(stmt.order_by(ExportJob.created_at.desc()).limit(100)).scalars().all()
+    return rows
+
+
+@router.get("/exports/{job_id}", response_model=ExportJobOut)
+def get_export(job_id: int, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    if not get_settings().feature_async_exports:
+        raise HTTPException(status_code=404, detail="Not found")
+    job = db.get(ExportJob, job_id)
+    if job is None or (ctx.user.global_role != "admin" and job.created_by != ctx.user.id):
+        raise HTTPException(status_code=404, detail="Export not found")
+    return job
+
+
+@router.get("/exports/{job_id}/download")
+async def download_export(job_id: int, request: Request, token: str | None = Query(default=None), db: Session = Depends(get_db)):
+    if not get_settings().feature_async_exports:
+        raise HTTPException(status_code=404, detail="Not found")
+    from app.services import exports as exports_service
+
+    job = db.get(ExportJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Export not found")
+    if token:
+        if hash_token(token) != job.token_hash:
+            raise HTTPException(status_code=404, detail="Export not found")
+    else:
+        settings = get_settings()
+        ctx = await get_auth_context(request, request.cookies.get(settings.session_cookie_name), db)
+        if ctx.user.global_role != "admin" and job.created_by != ctx.user.id:
+            raise HTTPException(status_code=404, detail="Export not found")
+    if job.status != "done" or exports_service.is_expired(job):
+        raise HTTPException(status_code=404, detail="Export not available")
+    path = exports_service.export_path(job)
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="Export not available")
+    media = "text/markdown" if (job.filename or "").endswith(".md") else "text/csv"
+    headers = {"X-Content-Type-Options": "nosniff", "Content-Disposition": f'attachment; filename="{job.filename or "export.csv"}"'}
+    return FileResponse(str(path), media_type=media, headers=headers)

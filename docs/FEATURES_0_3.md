@@ -1,6 +1,7 @@
 # Phases 0–3 — what changed, API impact, flags, deploy/rollback
 
-Only Phases 0–3 implemented. Phases 4–9 deferred. All changes additive; old routes/fields unchanged.
+Phases 0–3. All changes additive; old routes/fields unchanged.
+Phase 4 (SLA, analytics, releases, exports) is documented separately in `docs/PHASE_4.md` and `docs/ANALYTICS.md`.
 
 ## Phase 0 — safety
 - `docs/BASELINE.md`, `docs/MIGRATIONS.md`, `docs/BACKUP.md`

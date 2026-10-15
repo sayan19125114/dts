@@ -52,6 +52,20 @@ class Settings(BaseSettings):
     feature_notifications: bool = True
     feature_saved_views: bool = True
     feature_mentions: bool = True
+    # Phase 4 flags
+    feature_sla: bool = True
+    feature_analytics: bool = True
+    feature_releases: bool = True
+    feature_async_exports: bool = True
+    # SLA scheduler/worker. Off by default so imports/tests never spawn a thread;
+    # enable in production and/or drive via POST /api/v1/admin/jobs/run.
+    sla_scheduler_enabled: bool = False
+    sla_tick_seconds: int = 300
+    default_timezone: str = "UTC"
+    # Exports
+    export_dir: str = "./storage/exports"
+    export_expire_seconds: int = 3600
+    export_inline: bool = True  # process small exports synchronously; worker handles the rest
 
 
 @lru_cache

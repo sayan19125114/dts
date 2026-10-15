@@ -19,8 +19,10 @@ from app.core.permissions import (
     can_read_project,
     can_transition,
 )
-from app.db.models import Bug, BugHistory, CustomFieldDef, CustomFieldValue, Project, ProjectMember, User
+from app.db.models import Bug, BugHistory, CustomFieldDef, CustomFieldValue, Project, ProjectMember, Release, User
+from app.core.config import get_settings
 from app.db.session import get_db, get_session_factory
+from app.services import sla as sla_service
 from app.services.audit import log_audit
 from app.services.workflow import validate_transition as wf_validate
 from app.schemas.schemas import (
@@ -223,6 +225,8 @@ def create_bug(project_id: int, payload: BugCreateIn, ctx: AuthContext = Depends
             component=payload.component,
             affected_version=payload.affected_version,
             fixed_version=payload.fixed_version,
+            affected_release_id=payload.affected_release_id,
+            fixed_release_id=payload.fixed_release_id,
             created_at=_now(),
             updated_at=_now(),
         )
@@ -230,6 +234,11 @@ def create_bug(project_id: int, payload: BugCreateIn, ctx: AuthContext = Depends
         db.flush()
         _history(db, bug.id, ctx.user.id, "created", {"public_key": public_key, "title": bug.title})
         _save_custom_fields(db, bug, payload.custom_fields)
+        if get_settings().feature_sla:
+            try:
+                sla_service.apply_active_policy_if_any(db, bug, actor_id=ctx.user.id)
+            except Exception:  # SLA must never block defect creation
+                log.exception("sla apply failed for bug %s", bug.id)
         log_audit(db, actor_id=ctx.user.id, entity_type="bug", entity_id=bug.id, action="created", project_id=project_id, changes={"public_key": public_key})
         db.commit()
     except IntegrityError as e:
@@ -276,8 +285,13 @@ def update_bug(bug_id: int, payload: BugUpdateIn, ctx: AuthContext = Depends(get
         raise HTTPException(status_code=403, detail="Not permitted to edit this defect")
     if payload.version != bug.version:
         raise HTTPException(status_code=409, detail="Version conflict; refresh and retry")
+    for rid in (payload.affected_release_id, payload.fixed_release_id):
+        if rid is not None:
+            rel = db.get(Release, rid)
+            if rel is None or rel.project_id != bug.project_id:
+                raise HTTPException(status_code=400, detail="Release must exist in the same project")
     changes: dict = {}
-    for field in ("title", "description", "steps_to_reproduce", "expected_result", "actual_result", "environment", "severity", "priority", "type", "resolution", "due_date", "component", "affected_version", "fixed_version"):
+    for field in ("title", "description", "steps_to_reproduce", "expected_result", "actual_result", "environment", "severity", "priority", "type", "resolution", "due_date", "component", "affected_version", "fixed_version", "affected_release_id", "fixed_release_id"):
         new_val = getattr(payload, field, None)
         if new_val is not None:
             old_val = getattr(bug, field)
@@ -322,10 +336,17 @@ def transition_bug(bug_id: int, payload: BugTransitionIn, ctx: AuthContext = Dep
     bug.status = payload.to_status
     bug.version += 1
     bug.updated_at = _now()
+    if payload.to_status in sla_service.RESOLVED_STATES and bug.resolved_at is None:
+        bug.resolved_at = bug.updated_at
     hist_changes: dict = {"old": old, "new": payload.to_status}
     if payload.reason:
         hist_changes["reason"] = payload.reason.strip()[:500]
     _history(db, bug.id, ctx.user.id, "status_changed", hist_changes)
+    if get_settings().feature_sla:
+        try:
+            sla_service.on_status_change(db, bug, old, payload.to_status, actor_id=ctx.user.id)
+        except Exception:  # pragma: no cover
+            log.exception("sla status hook failed for bug %s", bug.id)
     log_audit(db, actor_id=ctx.user.id, entity_type="bug", entity_id=bug.id, action="status_changed", project_id=bug.project_id, changes=hist_changes)
     db.commit()
     db.refresh(bug)

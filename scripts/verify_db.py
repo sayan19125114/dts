@@ -29,7 +29,10 @@ def main() -> int:
         orphans = db.execute(select(func.count()).select_from(m.Bug).where(m.Bug.project_id.notin_(select(m.Project.id)))).scalar_one()
         print(f"orphan_bugs={orphans}")
         # new tables if present
-        for tbl in ("audit_logs", "notifications", "saved_views", "bug_links", "bug_watchers"):
+        for tbl in (
+            "audit_logs", "notifications", "saved_views", "bug_links", "bug_watchers",
+            "sla_policies", "bug_sla", "sla_events", "releases", "release_gates", "export_jobs",
+        ):
             try:
                 n = db.execute(select(func.count()).select_from(Base.metadata.tables[tbl])).scalar_one()
                 print(f"{tbl}={n}")

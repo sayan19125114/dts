@@ -16,6 +16,7 @@ from app.core.permissions import can_archive_bug, can_assign, can_edit_bug
 from app.db.models import Bug, BugLink, CustomFieldDef, CustomFieldValue, ProjectWorkflow, utcnow
 from app.db.session import get_db, get_session_factory
 from app.schemas.schemas import ALLOWED_TRANSITIONS
+from app.services import sla as _sla_service
 from app.services.audit import log_audit
 
 router = APIRouter()
@@ -252,10 +253,18 @@ def bulk(project_id: int, payload: BulkIn, ctx: AuthContext = Depends(get_auth_c
 
                 if not _ct(ctx.user.global_role, role, bug.reporter_id == ctx.user.id, bug.assignee_id == ctx.user.id, bug.status, payload.to_status or ""):
                     raise HTTPException(status_code=403, detail="Not permitted")
+                old_status = bug.status
                 bug.status = payload.to_status or bug.status
                 bug.version += 1
                 bug.updated_at = _now()
+                if bug.status in _sla_service.RESOLVED_STATES and bug.resolved_at is None:
+                    bug.resolved_at = bug.updated_at
                 _history(db, bug.id, ctx.user.id, "status_changed", {"new": bug.status, "bulk": True, "reason": payload.reason or ""})
+                if _gs().feature_sla:
+                    try:
+                        _sla_service.on_status_change(db, bug, old_status, bug.status, actor_id=ctx.user.id)
+                    except Exception:
+                        pass
             log_audit(db, actor_id=ctx.user.id, entity_type="bug", entity_id=bug.id, action=f"bulk_{payload.action}", project_id=project_id)
             results.append({"id": bid, "ok": True})
         except HTTPException as e:

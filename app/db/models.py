@@ -116,6 +116,11 @@ class Bug(Base):
     component: Mapped[str | None] = mapped_column(String(120), nullable=True, default=None)
     affected_version: Mapped[str | None] = mapped_column(String(120), nullable=True, default=None)
     fixed_version: Mapped[str | None] = mapped_column(String(120), nullable=True, default=None)
+    # Phase 4 additive: first time the defect entered a resolved state (never cleared;
+    # reopen is tracked via history so MTTR reflects first resolution).
+    resolved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    affected_release_id: Mapped[int | None] = mapped_column(ForeignKey("releases.id", ondelete="SET NULL"), nullable=True, default=None)
+    fixed_release_id: Mapped[int | None] = mapped_column(ForeignKey("releases.id", ondelete="SET NULL"), nullable=True, default=None)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
     archived_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -347,3 +352,176 @@ class SavedView(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     __table_args__ = (Index("ix_saved_owner", "owner_id"),)
+
+
+# ---- Phase 4: SLA, releases, exports (all new, additive, nullable-safe) ----
+
+class SlaPolicy(Base):
+    """Immutable-ish versioned SLA policy. Saving creates a new version row.
+
+    Only one row per project may be active at a time. Existing defects keep the
+    policy/version they were created under; applying a new policy to existing
+    defects is an explicit admin action.
+    """
+
+    __tablename__ = "sla_policies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, default="Default SLA")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    # business_hours: {"0": [[start_min, end_min], ...], ...} keyed 0=Mon..6=Sun
+    business_hours: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    holidays: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # targets: {"default": {...}, "by_severity": {...}, "by_priority": {...}}
+    targets: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    pause_statuses: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    effective_from: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    escalation_role: Mapped[str] = mapped_column(String(16), nullable=False, default="manager")
+    escalation_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "version", name="uq_sla_policy_version"),
+        Index("ix_sla_policy_project", "project_id", "is_active"),
+    )
+
+
+class BugSla(Base):
+    """The SLA policy instance applied to a single defect, with clocks."""
+
+    __tablename__ = "bug_sla"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bug_id: Mapped[int] = mapped_column(ForeignKey("bugs.id", ondelete="CASCADE"), nullable=False, unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    policy_id: Mapped[int | None] = mapped_column(ForeignKey("sla_policies.id", ondelete="SET NULL"), nullable=True)
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    # Immutable snapshots so later policy edits never change an existing defect's clocks.
+    business_hours: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    holidays: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    pause_statuses: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    escalation_role: Mapped[str] = mapped_column(String(16), nullable=False, default="manager")
+    escalation_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # target minutes (business minutes) for each clock
+    first_response_target: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    triage_target: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resolution_target: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    warning_pct: Mapped[int] = mapped_column(Integer, nullable=False, default=80)
+    # computed deadlines (absolute UTC instants)
+    first_response_due: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    triage_due: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_due: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # observed event instants
+    first_response_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    triage_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    paused_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="running")  # running|paused|met|breached
+    flags_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_bug_sla_project", "project_id"),
+        Index("ix_bug_sla_state", "state"),
+    )
+
+
+class SlaEvent(Base):
+    """Append-only SLA timeline for explainability (pause/resume/warn/breach/...)."""
+
+    __tablename__ = "sla_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bug_id: Mapped[int] = mapped_column(ForeignKey("bugs.id", ondelete="CASCADE"), nullable=False)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
+    policy_id: Mapped[int | None] = mapped_column(ForeignKey("sla_policies.id", ondelete="SET NULL"), nullable=True)
+    clock: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    detail_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_sla_event_bug", "bug_id", "created_at"),
+        Index("ix_sla_event_type", "event_type"),
+    )
+
+
+class Release(Base):
+    __tablename__ = "releases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned")  # planned|released|archived
+    planned_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    actual_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    release_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    gates_blocking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    released_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "version", name="uq_release_version"),
+        Index("ix_release_project", "project_id"),
+    )
+
+
+class ReleaseGate(Base):
+    """Configurable quality gate. Advisory unless the release has gates_blocking."""
+
+    __tablename__ = "release_gates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    release_id: Mapped[int] = mapped_column(ForeignKey("releases.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    rule_type: Mapped[str] = mapped_column(String(32), nullable=False)  # unresolved_critical|unresolved_high|max_open_by_severity|sla_compliance
+    config_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    blocking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    detail_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    evaluated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    waived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    waived_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    waiver_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    waived_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (Index("ix_release_gate_release", "release_id"),)
+
+
+class ExportJob(Base):
+    """Background (or inline) report export with a time-limited download token."""
+
+    __tablename__ = "export_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    params_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending|running|done|failed
+    filename: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    storage_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_export_owner", "created_by", "created_at"),
+        Index("ix_export_status", "status"),
+    )

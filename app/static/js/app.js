@@ -1349,6 +1349,328 @@ async function screenPassword() {
   c.appendChild(f); app.appendChild(c);
 }
 
+/* ---------- Phase 4: Analytics / Releases / SLA ---------- */
+const SEVERITIES = ["Critical", "High", "Medium", "Low", "Trivial"];
+
+async function fillProjectSelect(sel, { includeAll = false, onchange = null } = {}) {
+  try {
+    const projects = await fetchProjectsCached();
+    sel.textContent = "";
+    if (includeAll) { const o = document.createElement("option"); o.value = ""; o.textContent = "All visible projects"; sel.appendChild(o); }
+    for (const p of projects) {
+      const o = document.createElement("option");
+      o.value = String(p.id);
+      o.textContent = `${p.project_key} · ${p.name}`;
+      sel.appendChild(o);
+    }
+    if (!projects.length) { const o = document.createElement("option"); o.value = ""; o.textContent = "No projects"; sel.appendChild(o); }
+  } catch { /* ignore */ }
+  if (onchange) sel.addEventListener("change", onchange);
+  return sel;
+}
+
+function dateInputs(fromId, toId) {
+  const w = el("div", null, { class: "form-grid" });
+  const w1 = el("div", null); const l1 = el("label", "From"); l1.htmlFor = fromId;
+  const f = document.createElement("input"); f.type = "date"; f.id = fromId;
+  w1.append(l1, f);
+  const w2 = el("div", null); const l2 = el("label", "To"); l2.htmlFor = toId;
+  const t = document.createElement("input"); t.type = "date"; t.id = toId;
+  w2.append(l2, t);
+  w.append(w1, w2);
+  return { wrap: w, from: f, to: t };
+}
+
+async function screenAnalytics() {
+  if (!requireAuth()) return;
+  setCrumb("Analytics"); setActiveNav("analytics");
+  clearApp();
+  const head = pageHead("Quality analytics", "Defect flow, MTTR, reopen rate, SLA compliance, and release escape rate.");
+  const exportBtn = btn("Export CSV", "secondary");
+  head.appendChild(el("div", null));
+  app.appendChild(head);
+
+  const controls = el("div", null, { class: "card" });
+  const grid = el("div", null, { class: "form-grid" });
+  const w1 = el("div", null); const l1 = el("label", "Project"); l1.htmlFor = "an-p";
+  const psel = document.createElement("select"); psel.id = "an-p"; w1.append(l1, psel);
+  const w2 = el("div", null); const l2 = el("label", "Group by"); l2.htmlFor = "an-g";
+  const gsel = document.createElement("select"); gsel.id = "an-g";
+  for (const g of ["day", "week", "month"]) { const o = document.createElement("option"); o.value = g; o.textContent = g; gsel.appendChild(o); }
+  w2.append(l2, gsel);
+  const di = dateInputs("an-from", "an-to");
+  grid.append(w1, w2, di.wrap);
+  const apply = btn("Apply");
+  grid.appendChild(apply);
+  controls.appendChild(grid);
+  app.appendChild(controls);
+  const out = el("div", null); app.appendChild(out);
+  await fillProjectSelect(psel, { includeAll: true });
+
+  exportBtn.addEventListener("click", async () => {
+    try {
+      const params = { group_by: gsel.value };
+      if (psel.value) params.project_id = Number(psel.value);
+      if (di.from.value) params.date_from = di.from.value;
+      if (di.to.value) params.date_to = di.to.value;
+      const r = await api("/api/v1/reports/exports", { method: "POST", body: { kind: "analytics", params } });
+      window.location.href = r.download_url;
+      toast("Analytics export started", "ok");
+    } catch (ex) { toast(ex.message, "err"); }
+  });
+  controls.querySelector(".form-grid").after(exportBtn);
+
+  async function load() {
+    out.textContent = ""; out.appendChild(skeletonList(3));
+    const qs = new URLSearchParams();
+    if (psel.value) qs.set("project_id", psel.value);
+    if (di.from.value) qs.set("date_from", di.from.value);
+    if (di.to.value) qs.set("date_to", di.to.value);
+    qs.set("group_by", gsel.value);
+    try {
+      const d = await api(`/api/v1/analytics/summary?${qs.toString()}`);
+      out.textContent = "";
+      const stats = el("div", null, { class: "stat-grid" });
+      stats.append(
+        statCard("Opened", d.totals.opened, `in ${d.scope.date_from} → ${d.scope.date_to}`, "tint-a", "◉"),
+        statCard("Resolved", d.totals.resolved, "first resolution", "tint-b", "✓"),
+        statCard("Backlog", d.totals.backlog, "unresolved now", "tint-c", "▤"),
+        statCard("Reopened", d.totals.reopened, `reopen rate ${(d.reopen_rate * 100).toFixed(1)}%`, "tint-d", "↻"),
+        statCard("MTTR", d.mttr_hours ? `${d.mttr_hours.mean}h` : "–", d.mttr_hours ? `median ${d.mttr_hours.median}h` : "no resolutions", "tint-a", "⏱"),
+        statCard("SLA compliance", d.sla.compliance_pct == null ? "–" : `${d.sla.compliance_pct}%`, `${d.sla.breached} breached · ${d.sla.at_risk} at risk`, "tint-b", "◎"),
+        statCard("Escape rate", d.releases.escape_rate == null ? "–" : `${(d.releases.escape_rate * 100).toFixed(1)}%`, "defects found post-release", "tint-c", "⇧"),
+        statCard("Total defects", d.totals.total_defects, "in scope", "tint-d", "∑"),
+      );
+      out.appendChild(stats);
+
+      const c1 = el("div", null, { class: "card" });
+      c1.appendChild(el("h2", "Throughput"));
+      c1.appendChild(barChart(Object.entries(d.throughput).map(([k, v]) => [k, v.opened + v.resolved]), "fill-a"));
+      const legend = el("p", `Opened+resolved per ${d.scope.group_by}. Buckets: ${Object.keys(d.throughput).length}.`, { class: "muted" });
+      c1.appendChild(legend); out.appendChild(c1);
+
+      const c2 = el("div", null, { class: "card" });
+      c2.appendChild(el("h2", "Severity mix (current)"));
+      c2.appendChild(barChart(Object.entries(d.distributions.by_severity), "fill-b"));
+      out.appendChild(c2);
+
+      const c3 = el("div", null, { class: "card" });
+      c3.appendChild(el("h2", "SLA by clock"));
+      const rows = Object.entries(d.sla.by_clock);
+      c3.appendChild(barChart(rows.map(([k, v]) => [`${k} met`, v.met]), "fill-c"));
+      out.appendChild(c3);
+    } catch (ex) { out.textContent = ""; out.appendChild(errorBox(ex.message)); }
+  }
+  apply.addEventListener("click", load);
+  await load();
+}
+
+async function screenSla() {
+  if (!requireAuth()) return;
+  setCrumb("SLA"); setActiveNav("sla");
+  clearApp();
+  app.appendChild(pageHead("Service levels", "Business-calendar SLA policy, live clocks, and at-risk defects."));
+
+  const controls = el("div", null, { class: "card" });
+  const w1 = el("div", null); const l1 = el("label", "Project"); l1.htmlFor = "sla-p";
+  const psel = document.createElement("select"); psel.id = "sla-p"; w1.append(l1, psel);
+  controls.appendChild(w1);
+  const runBtn = btn("Run SLA check now", "secondary");
+  runBtn.style.marginTop = "10px";
+  if (me.global_role === "admin") controls.appendChild(runBtn);
+  else runBtn.hidden = true;
+  app.appendChild(controls);
+  const out = el("div", null); app.appendChild(out);
+  await fillProjectSelect(psel, { onchange: load });
+
+  runBtn.addEventListener("click", async () => {
+    try { const r = await api("/api/v1/admin/sla/run", { method: "POST" }); toast(`SLA pass: evaluated ${r.evaluated}`, "ok"); await load(); }
+    catch (ex) { toast(ex.message, "err"); }
+  });
+
+  async function load() {
+    const pid = psel.value;
+    out.textContent = "";
+    if (!pid) { out.appendChild(el("p", "Select a project.", { class: "muted" })); return; }
+    out.appendChild(skeletonList(2));
+    try {
+      let active = null;
+      try { active = await api(`/api/v1/projects/${pid}/sla-policies/active`); } catch { active = null; }
+      out.textContent = "";
+      const pc = el("div", null, { class: "card" });
+      pc.appendChild(el("h2", "Active policy"));
+      if (active) {
+        const t = active.targets && active.targets.default ? active.targets.default : {};
+        pc.appendChild(el("p", `${active.name} · v${active.version} · ${active.timezone}`, {}));
+        pc.appendChild(el("p", `First response ${t.first_response ?? "–"}m · Triage ${t.triage ?? "–"}m · Resolution ${t.resolution ?? "–"}m · warn ${t.warning_pct ?? 80}%`, { class: "muted" }));
+        pc.appendChild(el("p", `Pause statuses: ${(active.pause_statuses || []).join(", ") || "none"} · escalate to ${active.escalation_role}`, { class: "muted" }));
+      } else {
+        pc.appendChild(el("p", "No active SLA policy.", { class: "muted" }));
+      }
+      out.appendChild(pc);
+
+      const form = el("div", null, { class: "card" });
+      form.appendChild(el("h2", "New policy version"));
+      form.appendChild(el("p", "Saving creates a new version. Existing defects keep their snapshot until you re-apply.", { class: "muted" }));
+      const g = el("div", null, { class: "form-grid" });
+      const mk = (id, label, value, type = "text") => { const w = el("div", null); const l = el("label", label); l.htmlFor = id; const i = document.createElement("input"); i.id = id; i.type = type; if (value != null) i.value = value; w.append(l, i); return [w, i]; };
+      const [wn, n] = mk("sla-n", "Name", "Default SLA");
+      const [wtz, tz] = mk("sla-tz", "Timezone", "UTC");
+      const [wfr, fr] = mk("sla-fr", "First response (min)", "240", "number");
+      const [wtr, tr] = mk("sla-tr", "Triage (min)", "480", "number");
+      const [wrs, rs] = mk("sla-rs", "Resolution (min)", "2880", "number");
+      const [wpz, pz] = mk("sla-pz", "Pause statuses (comma)", "Fixed");
+      const [wer, er] = mk("sla-er", "Escalate to (manager/lead/admin)", "manager");
+      g.append(wn, wtz, wfr, wtr, wrs, wpz, wer);
+      const save = btn("Save policy");
+      form.append(g, save);
+      out.appendChild(form);
+      save.addEventListener("click", async () => {
+        try {
+          await api(`/api/v1/projects/${pid}/sla-policies`, { method: "POST", body: {
+            name: n.value, timezone: tz.value,
+            targets: { default: { first_response: Number(fr.value), triage: Number(tr.value), resolution: Number(rs.value), warning_pct: 80 } },
+            pause_statuses: pz.value.split(",").map((s) => s.trim()).filter(Boolean),
+            escalation_role: er.value,
+          } });
+          toast("Policy saved", "ok"); await load();
+        } catch (ex) { toast(ex.message, "err"); }
+      });
+
+      const reapply = btn("Re-apply to unresolved defects", "secondary");
+      reapply.style.margin = "8px 0 0";
+      form.appendChild(reapply);
+      reapply.addEventListener("click", async () => {
+        if (!(await confirmDialog("Apply the active policy version to all unresolved defects? Their clocks will be recalculated from creation time.", "Re-apply"))) return;
+        try { const r = await api(`/api/v1/projects/${pid}/sla/reapply`, { method: "POST", body: { apply_to_existing: true, only_unresolved: true } }); toast(`Re-applied to ${r.applied} defects`, "ok"); await load(); }
+        catch (ex) { toast(ex.message, "err"); }
+      });
+
+      const risk = await api(`/api/v1/projects/${pid}/sla/at-risk`);
+      const rc = el("div", null, { class: "card" });
+      rc.appendChild(el("h2", `At-risk defects (${risk.total})`));
+      if (!risk.items.length) { rc.appendChild(el("p", "Nothing at risk.", { class: "muted" })); out.appendChild(rc); return; }
+      const tw = el("div", null, { class: "table-wrap" });
+      const table = document.createElement("table");
+      const hr = document.createElement("tr"); ["Defect", "Status", "State", "Updated"].forEach((h) => hr.appendChild(el("th", h))); table.appendChild(hr);
+      for (const it of risk.items) {
+        const r = document.createElement("tr");
+        const a = document.createElement("td"); const link = el("a", it.public_key, { href: `#/bugs/${it.bug_id}`, class: "mono" }); a.appendChild(link);
+        const st = document.createElement("td"); st.appendChild(el("span", it.status || "–"));
+        const ste = document.createElement("td"); ste.appendChild(badge(it.state === "breached" ? "Rejected" : "Open")); ste.firstChild.textContent = it.state;
+        r.append(a, st, ste, el("td", fmtDate(it.updated_at)));
+        table.appendChild(r);
+      }
+      tw.appendChild(table); rc.appendChild(tw); out.appendChild(rc);
+    } catch (ex) { out.textContent = ""; out.appendChild(errorBox(ex.message)); }
+  }
+  await load();
+}
+
+async function screenReleases() {
+  if (!requireAuth()) return;
+  setCrumb("Releases"); setActiveNav("releases");
+  clearApp();
+  app.appendChild(pageHead("Releases & quality gates", "Plan a version, attach defects, evaluate gates, and ship with an audited override."));
+
+  const controls = el("div", null, { class: "card" });
+  const w1 = el("div", null); const l1 = el("label", "Project"); l1.htmlFor = "rel-p";
+  const psel = document.createElement("select"); psel.id = "rel-p"; w1.append(l1, psel);
+  controls.appendChild(w1);
+  app.appendChild(controls);
+  const out = el("div", null); app.appendChild(out);
+  await fillProjectSelect(psel, { onchange: load });
+
+  async function load() {
+    const pid = psel.value; out.textContent = "";
+    if (!pid) { out.appendChild(el("p", "Select a project.", { class: "muted" })); return; }
+    out.appendChild(skeletonList(2));
+    try {
+      const releases = await api(`/api/v1/projects/${pid}/releases`);
+      out.textContent = "";
+      const create = el("div", null, { class: "card" });
+      create.appendChild(el("h2", "New release"));
+      const g = el("div", null, { class: "form-grid" });
+      const mk = (id, label, type = "text") => { const w = el("div", null); const l = el("label", label); l.htmlFor = id; const i = document.createElement("input"); i.type = type; i.id = id; w.append(l, i); return [w, i]; };
+      const [wn, n] = mk("rel-n", "Name"); const [wv, v] = mk("rel-v", "Version"); const [wd, d] = mk("rel-d", "Planned date", "date");
+      g.append(wn, wv, wd);
+      const gateChk = el("label", "Block release on failing gates"); const gc = document.createElement("input"); gc.type = "checkbox";
+      const cwrap = el("div", null); cwrap.append(gc, gateChk);
+      const save = btn("Create release");
+      create.append(g, cwrap, save); out.appendChild(create);
+      save.addEventListener("click", async () => {
+        try { await api(`/api/v1/projects/${pid}/releases`, { method: "POST", body: { name: n.value, version: v.value, planned_date: d.value || null, gates_blocking: gc.checked } }); toast("Release created", "ok"); await load(); }
+        catch (ex) { toast(ex.message, "err"); }
+      });
+
+      if (!releases.length) { out.appendChild(el("p", "No releases yet.", { class: "muted" })); return; }
+      for (const rel of releases) {
+        const c = el("div", null, { class: "card" });
+        c.appendChild(el("h2", `${rel.name} (${rel.version})`));
+        c.appendChild(el("p", `${rel.status} · planned ${rel.planned_date || "–"} · actual ${rel.actual_date || "–"} · gates ${rel.gates_blocking ? "blocking" : "advisory"}`, { class: "muted" }));
+        const ready = await api(`/api/v1/releases/${rel.id}/readiness`);
+        const rw = el("p", ready.ready ? "Ready to ship." : `Blocked by ${ready.blocking_failures.length} gate(s).`, { class: ready.ready ? "muted" : "error" });
+        c.appendChild(rw);
+        const gateList = el("ul", null); gateList.className = "plain";
+        for (const gate of ready.gates) {
+          const li = el("li");
+          const label = `${gate.name} · ${gate.rule_type} · ${gate.passed === false ? "FAIL" : gate.passed === true ? "PASS" : "n/a"}${gate.waived ? " (waived)" : ""}${gate.blocking ? " · blocking" : ""}`;
+          li.appendChild(el("span", label));
+          const ev = btn("Evaluate", "ghost"); ev.classList.add("sm");
+          ev.addEventListener("click", async () => { try { await api(`/api/v1/releases/${rel.id}/gates/${gate.id}/evaluate`, { method: "POST" }); await load(); } catch (ex) { toast(ex.message, "err"); } });
+          li.appendChild(ev);
+          if (!gate.waived) {
+            const wa = btn("Waive", "ghost"); wa.classList.add("sm");
+            wa.addEventListener("click", async () => {
+              const reason = window.prompt("Waiver reason (required):");
+              if (!reason) return;
+              try { await api(`/api/v1/releases/${rel.id}/gates/${gate.id}/waive`, { method: "POST", body: { reason } }); toast("Gate waived", "ok"); await load(); } catch (ex) { toast(ex.message, "err"); }
+            });
+            li.appendChild(wa);
+          }
+          gateList.appendChild(li);
+        }
+        c.appendChild(gateList);
+
+        const addGate = el("div", null, { class: "form-actions" });
+        const rule = document.createElement("select");
+        for (const r of ["unresolved_critical", "unresolved_high", "max_open_by_severity", "sla_compliance"]) { const o = document.createElement("option"); o.value = r; o.textContent = r; rule.appendChild(o); }
+        const blocking = document.createElement("input"); blocking.type = "checkbox";
+        const bl = el("label", "blocking"); bl.prepend(blocking);
+        const ab = btn("Add gate", "secondary");
+        ab.addEventListener("click", async () => {
+          try { await api(`/api/v1/releases/${rel.id}/gates`, { method: "POST", body: { name: rule.value, rule_type: rule.value, config_json: { scope: "release" }, blocking: blocking.checked } }); toast("Gate added", "ok"); await load(); }
+          catch (ex) { toast(ex.message, "err"); }
+        });
+        addGate.append(rule, bl, ab);
+
+        const ship = btn(rel.status === "released" ? "Released" : "Mark released");
+        ship.disabled = rel.status === "released";
+        ship.addEventListener("click", async () => {
+          try { await api(`/api/v1/releases/${rel.id}/release`, { method: "POST" }); toast("Released", "ok"); await load(); }
+          catch (ex) {
+            if (ex.status === 409 && (await confirmDialog("Blocking gates failed. Force release with an audited override?", "Force release"))) {
+              const reason = window.prompt("Override reason (required):");
+              if (!reason) return;
+              try { await api(`/api/v1/releases/${rel.id}/release?force=true&reason=${encodeURIComponent(reason)}`, { method: "POST" }); toast("Force-released", "ok"); await load(); }
+              catch (e2) { toast(e2.message, "err"); }
+            } else { toast(ex.message, "err"); }
+          }
+        });
+        const notes = btn("Notes", "ghost");
+        notes.addEventListener("click", async () => {
+          try { const dd = await api(`/api/v1/releases/${rel.id}/notes`); window.prompt("Release notes (copy):", dd.markdown); }
+          catch (ex) { toast(ex.message, "err"); }
+        });
+        addGate.append(ship, notes);
+        c.appendChild(addGate);
+        out.appendChild(c);
+      }
+    } catch (ex) { out.textContent = ""; out.appendChild(errorBox(ex.message)); }
+  }
+  await load();
+}
+
 function router() {
   const h = location.hash || "#/dashboard";
   const status = document.getElementById("status");
@@ -1369,6 +1691,9 @@ function router() {
   if ((m = h.match(/^#\/bugs\/(\d+)$/))) return screenBugDetail(m[1]);
   if (h === "#/assigned") return screenAssigned();
   if (h === "#/reports") return screenReports();
+  if (h === "#/analytics") return screenAnalytics();
+  if (h === "#/releases") return screenReleases();
+  if (h === "#/sla") return screenSla();
   if (h === "#/admin") return screenAdmin();
   if (h === "#/password") return screenPassword();
   clearApp(); setCrumb("Not found");

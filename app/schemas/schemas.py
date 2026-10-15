@@ -196,6 +196,8 @@ class BugCreateIn(BaseModel):
     component: Optional[str] = Field(default=None, max_length=120)
     affected_version: Optional[str] = Field(default=None, max_length=120)
     fixed_version: Optional[str] = Field(default=None, max_length=120)
+    affected_release_id: Optional[int] = None
+    fixed_release_id: Optional[int] = None
     custom_fields: Optional[Dict[str, str]] = None
 
     @field_validator("severity")
@@ -236,6 +238,8 @@ class BugUpdateIn(BaseModel):
     component: Optional[str] = Field(default=None, max_length=120)
     affected_version: Optional[str] = Field(default=None, max_length=120)
     fixed_version: Optional[str] = Field(default=None, max_length=120)
+    affected_release_id: Optional[int] = None
+    fixed_release_id: Optional[int] = None
     custom_fields: Optional[Dict[str, str]] = None
 
     @field_validator("severity")
@@ -303,6 +307,9 @@ class BugOut(BaseModel):
     component: Optional[str] = None
     affected_version: Optional[str] = None
     fixed_version: Optional[str] = None
+    affected_release_id: Optional[int] = None
+    fixed_release_id: Optional[int] = None
+    resolved_at: Optional[dt.datetime] = None
     created_at: Optional[dt.datetime] = None
     updated_at: Optional[dt.datetime] = None
 
@@ -368,3 +375,224 @@ class DashboardSummary(BaseModel):
     recently_updated: List[BugOut]
     overdue: int
     per_project: List[Dict[str, Any]]
+
+
+# ---- Phase 4: SLA ----
+class SlaPolicyIn(BaseModel):
+    name: str = Field(default="Default SLA", min_length=1, max_length=120)
+    timezone: str = Field(default="UTC", max_length=64)
+    business_hours: Optional[Dict[str, Any]] = None
+    holidays: Optional[List[str]] = None
+    targets: Optional[Dict[str, Any]] = None
+    pause_statuses: Optional[List[str]] = None
+    escalation_role: str = Field(default="manager", max_length=16)
+    escalation_user_id: Optional[int] = None
+    notes: str = Field(default="", max_length=2000)
+
+    @field_validator("pause_statuses")
+    @classmethod
+    def check_pause(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is not None:
+            for s in v:
+                if s not in VALID_STATUSES:
+                    raise ValueError(f"Invalid pause status: {s}")
+        return v
+
+    @field_validator("escalation_role")
+    @classmethod
+    def check_role(cls, v: str) -> str:
+        if v not in ("manager", "lead", "admin"):
+            raise ValueError("escalation_role must be manager, lead, or admin")
+        return v
+
+
+class SlaPolicyOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    project_id: int
+    name: str
+    version: int
+    is_active: bool
+    timezone: str
+    business_hours: Dict[str, Any] = {}
+    holidays: List[Any] = []
+    targets: Dict[str, Any] = {}
+    pause_statuses: List[Any] = []
+    escalation_role: str
+    escalation_user_id: Optional[int] = None
+    notes: str = ""
+    effective_from: Optional[dt.datetime] = None
+    created_at: Optional[dt.datetime] = None
+
+
+class SlaReapplyIn(BaseModel):
+    apply_to_existing: bool = False
+    only_unresolved: bool = True
+    project_id: Optional[int] = None
+
+
+class SlaEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    clock: str
+    event_type: str
+    detail_json: Dict[str, Any] = {}
+    created_at: Optional[dt.datetime] = None
+
+
+class BugSlaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    bug_id: int
+    project_id: int
+    policy_id: Optional[int] = None
+    policy_version: int
+    timezone: str
+    first_response_target: Optional[int] = None
+    triage_target: Optional[int] = None
+    resolution_target: Optional[int] = None
+    warning_pct: int
+    first_response_due: Optional[dt.datetime] = None
+    triage_due: Optional[dt.datetime] = None
+    resolution_due: Optional[dt.datetime] = None
+    first_response_at: Optional[dt.datetime] = None
+    triage_at: Optional[dt.datetime] = None
+    resolved_at: Optional[dt.datetime] = None
+    is_paused: bool
+    paused_at: Optional[dt.datetime] = None
+    state: str
+    flags_json: Dict[str, Any] = {}
+    started_at: Optional[dt.datetime] = None
+    updated_at: Optional[dt.datetime] = None
+
+
+class BugSlaDetailOut(BaseModel):
+    sla: BugSlaOut
+    events: List[SlaEventOut] = []
+    compliance: Dict[str, Any] = {}
+
+
+# ---- Phase 4: Releases ----
+class ReleaseIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    version: str = Field(min_length=1, max_length=64)
+    description: str = Field(default="", max_length=5000)
+    planned_date: Optional[dt.date] = None
+    actual_date: Optional[dt.date] = None
+    release_notes: str = Field(default="", max_length=20000)
+    gates_blocking: bool = False
+
+
+class ReleaseUpdateIn(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=5000)
+    planned_date: Optional[dt.date] = None
+    actual_date: Optional[dt.date] = None
+    release_notes: Optional[str] = Field(default=None, max_length=20000)
+    gates_blocking: Optional[bool] = None
+
+
+class ReleaseOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    project_id: int
+    name: str
+    version: str
+    description: str = ""
+    status: str
+    planned_date: Optional[dt.date] = None
+    actual_date: Optional[dt.date] = None
+    release_notes: str = ""
+    gates_blocking: bool
+    created_at: Optional[dt.datetime] = None
+    updated_at: Optional[dt.datetime] = None
+    released_at: Optional[dt.datetime] = None
+
+
+class ReleaseGateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    rule_type: str
+    config_json: Dict[str, Any] = {}
+    blocking: bool = False
+
+    @field_validator("rule_type")
+    @classmethod
+    def check_rule(cls, v: str) -> str:
+        if v not in ("unresolved_critical", "unresolved_high", "max_open_by_severity", "sla_compliance"):
+            raise ValueError("Invalid rule_type")
+        return v
+
+
+class ReleaseGateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    release_id: int
+    name: str
+    rule_type: str
+    config_json: Dict[str, Any] = {}
+    blocking: bool
+    passed: Optional[bool] = None
+    detail_json: Dict[str, Any] = {}
+    evaluated_at: Optional[dt.datetime] = None
+    waived: bool
+    waived_by: Optional[int] = None
+    waiver_reason: str = ""
+    waived_at: Optional[dt.datetime] = None
+
+
+class ReleaseReadinessOut(BaseModel):
+    release: ReleaseOut
+    gates: List[ReleaseGateOut]
+    blocking_failures: List[int]
+    advisory_failures: List[int]
+    ready: bool
+    would_block: bool
+    unresolved_by_severity: Dict[str, int]
+
+
+class ReleaseWaiveIn(BaseModel):
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class ReleaseBugsIn(BaseModel):
+    bug_id: int
+    relation: str = "fixed"
+
+    @field_validator("relation")
+    @classmethod
+    def check_rel(cls, v: str) -> str:
+        if v not in ("affected", "fixed"):
+            raise ValueError("relation must be affected or fixed")
+        return v
+
+
+# ---- Phase 4: exports ----
+class ExportRequestIn(BaseModel):
+    kind: str
+    params: Dict[str, Any] = {}
+
+    @field_validator("kind")
+    @classmethod
+    def check_kind(cls, v: str) -> str:
+        if v not in ("bugs", "sla_compliance", "release_notes", "analytics"):
+            raise ValueError("Invalid export kind")
+        return v
+
+
+class ExportJobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    kind: str
+    status: str
+    filename: str
+    row_count: Optional[int] = None
+    error: str = ""
+    expires_at: Optional[dt.datetime] = None
+    created_at: Optional[dt.datetime] = None
+    finished_at: Optional[dt.datetime] = None
+
+
+class ExportJobCreatedOut(BaseModel):
+    job: ExportJobOut
+    download_url: str
+    token: Optional[str] = None
